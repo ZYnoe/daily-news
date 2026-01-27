@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 try:
     from zoneinfo import ZoneInfo
@@ -35,8 +36,28 @@ def sanitize_domain(url: str) -> str:
     return host or "Unknown"
 
 
-def brave_search(query: str, api_key: str, count: int = 3) -> list[dict]:
-    params = urllib.parse.urlencode({"q": query, "count": str(count)})
+def load_sources_config(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def brave_search(
+    query: str,
+    api_key: str,
+    count: int = 3,
+    freshness: Optional[str] = None,
+    search_lang: Optional[str] = None,
+) -> list[dict]:
+    params_dict = {"q": query, "count": str(count)}
+    if freshness:
+        params_dict["freshness"] = freshness
+    if search_lang:
+        params_dict["search_lang"] = search_lang
+    params = urllib.parse.urlencode(params_dict)
     url = f"{BRAVE_API_URL}?{params}"
     request = urllib.request.Request(
         url,
@@ -154,6 +175,18 @@ def ensure_timezone(tz_name: str) -> datetime:
         return datetime.now()
 
 
+def build_site_filter(sources: list[dict]) -> str:
+    domains = []
+    for source in sources:
+        url = source.get("url") or ""
+        domain = sanitize_domain(url)
+        if domain != "Unknown" and domain not in domains:
+            domains.append(domain)
+    if not domains:
+        return ""
+    return " OR ".join(f"site:{domain}" for domain in domains)
+
+
 def build_prompt(date_str: str, sources: list[dict]) -> str:
     data = json.dumps(sources, ensure_ascii=False, indent=2)
     return (
@@ -180,6 +213,13 @@ def main() -> int:
     openai_key = require_env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     tz_name = os.getenv("NEWS_TIMEZONE", "Asia/Shanghai")
+    freshness = os.getenv("NEWS_FRESHNESS", "pd")
+    search_lang = os.getenv("NEWS_SEARCH_LANG", "en")
+
+    config = load_sources_config(Path("config") / "news_sources.json")
+    configured_categories = (
+        config.get("categories", {}) if isinstance(config, dict) else {}
+    )
 
     now = ensure_timezone(tz_name)
     date_dir = now.strftime("%Y-%m-%d")
@@ -187,22 +227,27 @@ def main() -> int:
 
     categories = [
         {
+            "key": "tech",
             "name": "Tech & AI",
             "query": "AI breakthroughs semiconductors software cloud chips",
         },
         {
+            "key": "finance",
             "name": "Finance",
             "query": "markets macroeconomics central bank rates bonds inflation",
         },
         {
+            "key": "startups",
             "name": "Startups",
             "query": "startup funding venture capital seed round",
         },
         {
+            "key": "life_science",
             "name": "Life Science",
             "query": "biotech healthcare clinical trial FDA gene therapy",
         },
         {
+            "key": "macro",
             "name": "Macro Trends",
             "query": "geopolitics energy climate policy",
         },
@@ -210,7 +255,21 @@ def main() -> int:
 
     sources = []
     for index, category in enumerate(categories):
-        items = brave_search(category["query"], brave_key, count=3)
+        configured = configured_categories.get(category["key"], {})
+        sources_config = (
+            configured.get("sources", []) if isinstance(configured, dict) else []
+        )
+        site_filter = build_site_filter(sources_config)
+        query = category["query"]
+        if site_filter:
+            query = f"{query} ({site_filter})"
+        items = brave_search(
+            query,
+            brave_key,
+            count=3,
+            freshness=freshness,
+            search_lang=search_lang,
+        )
         sources.append({"category": category["name"], "items": items})
         if index < len(categories) - 1:
             time.sleep(1 + random.random())

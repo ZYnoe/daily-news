@@ -156,6 +156,7 @@ See `config/MCP_SETUP_GUIDE.md` for setup details.
 5. **Include Key Takeaways section** at the end
 6. **Save locally first**, then send to Slack
 7. **Cite sources** - include HN point counts when applicable
+8. **Never overwrite an existing briefing** - always create a new file in the same date folder using a timestamped name like `今日新闻_YYYYMMDD_HHMM.md`
 
 ---
 

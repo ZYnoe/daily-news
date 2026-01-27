@@ -1,0 +1,10 @@
+[workspace]
+authors = ["zylu <luzeyu3077@gmail.com>"]
+channels = ["conda-forge"]
+name = "AI_demo"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]

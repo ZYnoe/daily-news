@@ -1,0 +1,41 @@
+name: Daily News Briefing
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    env:
+      NEWS_TIMEZONE: Asia/Shanghai
+      BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || 'gpt-4o-mini' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate briefing
+        run: python scripts/generate_news.py
+
+      - name: Commit and push
+        run: |
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add news
+          git commit -m "chore: add daily news briefing"
+          git push

@@ -2,6 +2,8 @@ import json
 import os
 import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -40,8 +42,20 @@ def brave_search(query: str, api_key: str, count: int = 6) -> list[dict]:
             "X-Subscription-Token": api_key,
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    attempts = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429:
+                raise
+            attempts += 1
+            if attempts >= 3:
+                raise
+            wait_seconds = 2 * attempts
+            time.sleep(wait_seconds)
 
     results = payload.get("web", {}).get("results", [])
     items = []

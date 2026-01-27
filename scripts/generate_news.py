@@ -1,6 +1,8 @@
 import json
 import os
+import random
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -33,7 +35,7 @@ def sanitize_domain(url: str) -> str:
     return host or "Unknown"
 
 
-def brave_search(query: str, api_key: str, count: int = 6) -> list[dict]:
+def brave_search(query: str, api_key: str, count: int = 3) -> list[dict]:
     params = urllib.parse.urlencode({"q": query, "count": str(count)})
     url = f"{BRAVE_API_URL}?{params}"
     request = urllib.request.Request(
@@ -62,6 +64,13 @@ def brave_search(query: str, api_key: str, count: int = 6) -> list[dict]:
                 )
             wait_seconds = 2 * attempts
             time.sleep(wait_seconds)
+        except (urllib.error.URLError, socket.timeout) as exc:
+            attempts += 1
+            if attempts >= 3:
+                raise RuntimeError(
+                    f"Brave API network error after {attempts} attempts for {url}: {exc}"
+                )
+            time.sleep(2 * attempts)
 
     results = payload.get("web", {}).get("results", [])
     items = []
@@ -109,14 +118,24 @@ def openai_summarize(prompt: str, api_key: str, model: str) -> str:
             "Authorization": f"Bearer {api_key}",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(
-            f"OpenAI API error {exc.code} for model {model}: {body or exc.reason}"
-        )
+    attempts = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(
+                f"OpenAI API error {exc.code} for model {model}: {body or exc.reason}"
+            )
+        except (urllib.error.URLError, socket.timeout) as exc:
+            attempts += 1
+            if attempts >= 2:
+                raise RuntimeError(
+                    f"OpenAI API network error after {attempts} attempts: {exc}"
+                )
+            time.sleep(3)
 
     choices = payload.get("choices", [])
     if not choices:
@@ -191,9 +210,11 @@ def main() -> int:
     ]
 
     sources = []
-    for category in categories:
-        items = brave_search(category["query"], brave_key, count=6)
+    for index, category in enumerate(categories):
+        items = brave_search(category["query"], brave_key, count=3)
         sources.append({"category": category["name"], "items": items})
+        if index < len(categories) - 1:
+            time.sleep(1 + random.random())
 
     prompt = build_prompt(date_dir, sources)
     briefing = openai_summarize(prompt, openai_key, model)

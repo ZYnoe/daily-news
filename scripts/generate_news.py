@@ -95,7 +95,6 @@ def openai_summarize(prompt: str, api_key: str, model: str) -> str:
     body = json.dumps(
         {
             "model": model,
-            "temperature": 0.4,
             "messages": [
                 {
                     "role": "system",

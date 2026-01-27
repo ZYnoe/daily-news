@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - zoneinfo may be unavailable
 
 BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+SEEN_URLS_PATH = Path("news") / ".cache" / "seen_urls.json"
 
 
 def require_env(name: str) -> str:
@@ -43,6 +44,29 @@ def load_sources_config(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def load_seen_urls(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    if not isinstance(payload, list):
+        return set()
+    return {str(item) for item in payload if item}
+
+
+def save_seen_urls(path: Path, seen: set[str], limit: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ordered = list(seen)
+    if len(ordered) > limit:
+        ordered = ordered[-limit:]
+    path.write_text(
+        json.dumps(ordered, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def brave_search(
@@ -208,6 +232,22 @@ def build_prompt(date_str: str, sources: list[dict]) -> str:
     )
 
 
+def build_query(base: str, date_hint: Optional[str]) -> str:
+    if not date_hint:
+        return base
+    return f"{base} {date_hint}"
+
+
+def dedupe_items(items: list[dict], seen: set[str]) -> list[dict]:
+    filtered = []
+    for item in items:
+        url = item.get("url") or ""
+        if not url or url in seen:
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def main() -> int:
     brave_key = require_env("BRAVE_API_KEY")
     openai_key = require_env("OPENAI_API_KEY")
@@ -215,6 +255,11 @@ def main() -> int:
     tz_name = os.getenv("NEWS_TIMEZONE", "Asia/Shanghai")
     freshness = os.getenv("NEWS_FRESHNESS", "pd")
     search_lang = os.getenv("NEWS_SEARCH_LANG", "en")
+    result_count = int(os.getenv("NEWS_RESULT_COUNT", "6"))
+    max_items = int(os.getenv("NEWS_MAX_ITEMS", "5"))
+    dedupe_limit = int(os.getenv("NEWS_DEDUP_LIMIT", "2000"))
+    use_date_hint = os.getenv("NEWS_QUERY_DATE_HINT", "1") == "1"
+    shuffle_results = os.getenv("NEWS_SHUFFLE_RESULTS", "1") == "1"
 
     config = load_sources_config(Path("config") / "news_sources.json")
     configured_categories = (
@@ -223,6 +268,7 @@ def main() -> int:
 
     now = ensure_timezone(tz_name)
     date_dir = now.strftime("%Y-%m-%d")
+    date_hint = date_dir if use_date_hint else None
     timestamp = now.strftime("%Y%m%d_%H%M")
 
     categories = [
@@ -254,6 +300,7 @@ def main() -> int:
     ]
 
     sources = []
+    seen_urls = load_seen_urls(SEEN_URLS_PATH)
     for index, category in enumerate(categories):
         configured = configured_categories.get(category["key"], {})
         sources_config = (
@@ -263,14 +310,28 @@ def main() -> int:
         query = category["query"]
         if site_filter:
             query = f"{query} ({site_filter})"
-        items = brave_search(
-            query,
-            brave_key,
-            count=3,
-            freshness=freshness,
-            search_lang=search_lang,
-        )
-        sources.append({"category": category["name"], "items": items})
+        queries = [build_query(query, date_hint), query]
+        merged: list[dict] = []
+        for candidate in queries:
+            items = brave_search(
+                candidate,
+                brave_key,
+                count=result_count,
+                freshness=freshness,
+                search_lang=search_lang,
+            )
+            filtered = dedupe_items(items, seen_urls)
+            merged.extend(filtered)
+            if len(merged) >= max_items:
+                break
+        if shuffle_results:
+            random.shuffle(merged)
+        final_items = merged[:max_items]
+        for item in final_items:
+            url = item.get("url") or ""
+            if url:
+                seen_urls.add(url)
+        sources.append({"category": category["name"], "items": final_items})
         if index < len(categories) - 1:
             time.sleep(1 + random.random())
 
@@ -292,6 +353,7 @@ def main() -> int:
         counter += 1
 
     output_path.write_text(content, encoding="utf-8")
+    save_seen_urls(SEEN_URLS_PATH, seen_urls, dedupe_limit)
     print(str(output_path))
     return 0
 

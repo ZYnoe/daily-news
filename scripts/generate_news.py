@@ -35,8 +35,9 @@ def sanitize_domain(url: str) -> str:
 
 def brave_search(query: str, api_key: str, count: int = 6) -> list[dict]:
     params = urllib.parse.urlencode({"q": query, "count": str(count)})
+    url = f"{BRAVE_API_URL}?{params}"
     request = urllib.request.Request(
-        f"{BRAVE_API_URL}?{params}",
+        url,
         headers={
             "Accept": "application/json",
             "X-Subscription-Token": api_key,
@@ -50,10 +51,15 @@ def brave_search(query: str, api_key: str, count: int = 6) -> list[dict]:
             break
         except urllib.error.HTTPError as exc:
             if exc.code != 429:
-                raise
+                body = exc.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(
+                    f"Brave API error {exc.code} for {url}: {body or exc.reason}"
+                )
             attempts += 1
             if attempts >= 3:
-                raise
+                raise RuntimeError(
+                    f"Brave API rate limited after {attempts} attempts for {url}"
+                )
             wait_seconds = 2 * attempts
             time.sleep(wait_seconds)
 
@@ -103,8 +109,14 @@ def openai_summarize(prompt: str, api_key: str, model: str) -> str:
             "Authorization": f"Bearer {api_key}",
         },
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(
+            f"OpenAI API error {exc.code} for model {model}: {body or exc.reason}"
+        )
 
     choices = payload.get("choices", [])
     if not choices:
